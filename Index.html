@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Deriv Digit Analyzer</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 16px; }
+.container { max-width: 900px; margin: auto; }
+  h1 { color: #38bdf8; margin-bottom: 4px; }
+.card { background: #1e293b; border-radius: 12px; padding: 16px; margin: 12px 0; }
+  input, select, button { padding: 10px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; }
+  button { background: #38bdf8; color: #0f172a; font-weight: 600; cursor: pointer; border: none; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.stat { text-align: center; }
+.stat.value { font-size: 1.8rem; font-weight: 700; }
+.stat.label { font-size: 0.8rem; color: #94a3b8; }
+.digits { display: flex; gap: 4px; flex-wrap: wrap; }
+.digit { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 6px; font-size: 0.9rem; }
+.even { background: #166534; }.odd { background: #7c2d12; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  td, th { padding: 6px; border-bottom: 1px solid #334155; text-align: center; }
+.green { color: #4ade80; }.red { color: #f87171; }
+.warning { background: #451a03; border-left: 4px solid #f59e0b; padding: 12px; border-radius: 8px; margin: 12px 0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Deriv Digit Analyzer</h1>
+  <p>Live analysis for Even/Odd, Over/Under, Matches/Differs, Rise/Fall</p>
+  <div class="warning">
+    <b>Security:</b> Use API tokens from app.deriv.com > API token. Never share your token. This tool runs 100% in your browser.
+  </div>
+  <div class="card">
+    <b>1. Connect</b><br><br>
+    <input id="token" placeholder="Paste your Deriv API token" style="width: 60%; margin-right: 8px;">
+    <select id="symbol">
+      <option value="R_10">Volatility 10 Index</option>
+      <option value="R_25">Volatility 25 Index</option>
+      <option value="R_50">Volatility 50 Index</option>
+      <option value="R_75">Volatility 75 Index</option>
+      <option value="R_100">Volatility 100 Index</option>
+    </select>
+    <button id="connectBtn">Connect</button>
+    <span id="status" style="margin-left: 12px; color: #94a3b8;">Disconnected</span>
+  </div>
+  <div class="card">
+    <b>2. Live Stats - Last 100 ticks</b>
+    <div class="grid" style="margin-top: 12px;">
+      <div class="stat"><div class="value" id="evenPct">0%</div><div class="label">Even</div></div>
+      <div class="stat"><div class="value" id="oddPct">0%</div><div class="label">Odd</div></div>
+      <div class="stat"><div class="value" id="overPct">0%</div><div class="label">Over 5</div></div>
+      <div class="stat"><div class="value" id="underPct">0%</div><div class="label">Under 5</div></div>
+      <div class="stat"><div class="value" id="risePct">0%</div><div class="label">Rise</div></div>
+      <div class="stat"><div class="value" id="fallPct">0%</div><div class="label">Fall</div></div>
+    </div>
+  </div>
+  <div class="card">
+    <b>3. Last 20 Digits</b>
+    <div class="digits" id="digitStream" style="margin-top: 12px;"></div>
+  </div>
+  <div class="card">
+    <b>4. Matches/Differs vs Last Digit</b>
+    <div>Current digit: <b id="lastDigit">-</b> | Streak: <span id="streak">0</span> <span id="streakType"></span></div>
+    <table style="margin-top: 8px;">
+      <tr><th>Digit</th><th>Count</th><th>%</th></tr>
+      <tbody id="digitTable"></tbody>
+    </table>
+  </div>
+</div>
+<script>
+let ws, ticks = [], lastPrice = null;
+const app_id = 1089;
+document.getElementById('connectBtn').onclick = () => {
+  const token = document.getElementById('token').value.trim();
+  const symbol = document.getElementById('symbol').value;
+  if (!token) return alert('Enter API token from Deriv');
+  if (ws) ws.close();
+  ws = new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${app_id}`);
+  ws.onopen = () => { ws.send(JSON.stringify({ authorize: token })); };
+  ws.onmessage = (msg) => {
+    const data = JSON.parse(msg.data);
+    if (data.error) {
+      document.getElementById('status').textContent = 'Error: ' + data.error.message;
+      document.getElementById('status').className = 'red';
+      return;
+    }
+    if (data.msg_type === 'authorize') {
+      document.getElementById('status').textContent = 'Connected as ' + data.authorize.loginid;
+      document.getElementById('status').className = 'green';
+      ws.send(JSON.stringify({ ticks: symbol, subscribe: 1 }));
+    }
+    if (data.msg_type === 'tick') { updateTick(data.tick); }
+  };
+  ws.onclose = () => {
+    document.getElementById('status').textContent = 'Disconnected';
+    document.getElementById('status').className = '';
+  };
+};
+function updateTick(tick) {
+  const price = tick.quote;
+  const digit = Math.floor((price * 100) % 10);
+  const prevPrice = lastPrice;
+  lastPrice = price;
+  ticks.unshift({ price, digit, rise: prevPrice? price > prevPrice : null });
+  if (ticks.length > 100) ticks.pop();
+  render();
+}
+function render() {
+  if (ticks.length === 0) return;
+  document.getElementById('lastDigit').textContent = ticks[0].digit;
+  document.getElementById('digitStream').innerHTML = ticks.slice(0, 20).map(t =>
+    `<div class="digit ${t.digit % 2 === 0? 'even' : 'odd'}">${t.digit}</div>`
+  ).join('');
+  const evens = ticks.filter(t => t.digit % 2 === 0).length;
+  const over = ticks.filter(t => t.digit > 5).length;
+  const rise = ticks.filter(t => t.rise === true).length;
+  const fall = ticks.filter(t => t.rise === false).length;
+  document.getElementById('evenPct').textContent = (evens / ticks.length * 100).toFixed(1) + '%';
+  document.getElementById('oddPct').textContent = ((ticks.length - evens) / ticks.length * 100).toFixed(1) + '%';
+  document.getElementById('overPct').textContent = (over / ticks.length * 100).toFixed(1) + '%';
+  document.getElementById('underPct').textContent = ((ticks.length - over) / ticks.length * 100).toFixed(1) + '%';
+  document.getElementById('risePct').textContent = (rise / (ticks.length - 1) * 100).toFixed(1) + '%';
+  document.getElementById('fallPct').textContent = (fall / (ticks.length - 1) * 100).toFixed(1) + '%';
+  const counts = Array(10).fill(0);
+  ticks.forEach(t => counts[t.digit]++);
+  document.getElementById('digitTable').innerHTML = counts.map((c, d) =>
+    `<tr><td>${d}</td><td>${c}</td><td>${(c / ticks.length * 100).toFixed(1)}%</td></tr>`
+  ).join('');
+  let streak = 1, type = 'Matches';
+  for (let i = 1; i < ticks.length; i++) {
+    if (ticks[i].digit === ticks[0].digit) streak++;
+    else { type = 'Differs'; break; }
+  }
+  document.getElementById('streak').textContent = streak;
+  document.getElementById('streakType').textContent = type;
+}
+</script>
+</body>
+</html>
